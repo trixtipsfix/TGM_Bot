@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="container">
+    <h1>Initial Setup</h1>
+    <form id="setup-form">
+        <input type="text" name="api_id" placeholder="API ID" required>
+        <input type="text" name="api_hash" placeholder="API Hash" required>
+        <input type="text" name="phone" placeholder="Phone (+1234567890)" required>
+        <button type="submit">Submit</button>
+    </form>
+    <div id="code-input" style="display: none;">
+        <input type="text" id="verification-code" placeholder="Verification Code">
+        <button id="submit-code">Submit Code</button>
+    </div>
+    <div id="chat-selection" style="display: none;">
+        <h2>Select Chats</h2>
+        <div id="chat-list"></div>
+        <button id="save-chats">Save Configuration</button>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="container">
+    <h1>Dashboard</h1>
+    <h2>Current Configuration</h2>
+    <p>Source Chats: {{ config.chats_origen }}</p>
+    <p>Destination Chat: {{ config.chat_destino }}</p>
+    <p>Bot Status: <span id="bot-status">{{ bot_status }}</span></p>
+    <button id="start-bot" {% if bot_status == 'running' %}disabled{% endif %}>Start Bot</button>
+    <button id="stop-bot" {% if bot_status == 'stopped' %}disabled{% endif %}>Stop Bot</button>
+    <div id="status-message"></div>
+</div>
+<script>
+document.getElementById('start-bot').addEventListener('click', async () => {
+    const response = await fetch('/start_bot', { method: 'POST' });
+    const data = await response.json();
+    if (data.status === 'started') {
+        document.getElementById('bot-status').textContent = 'running';
+        document.getElementById('start-bot').disabled = true;
+        document.getElementById('stop-bot').disabled = false;
+        document.getElementById('status-message').textContent = 'Bot started successfully';
+    } else {
+        document.getElementById('status-message').textContent = data.error || 'Failed to start bot';
+    }
+});
+
+document.getElementById('stop-bot').addEventListener('click', async () => {
+    const response = await fetch('/stop_bot', { method: 'POST' });
+    const data = await response.json();
+    if (data.status === 'stopped') {
+        document.getElementById('bot-status').textContent = 'stopped';
+        document.getElementById('start-bot').disabled = false;
+        document.getElementById('stop-bot').disabled = true;
+        document.getElementById('status-message').textContent = 'Bot stopped successfully';
+    } else {
+        document.getElementById('status-message').textContent = 'Bot was not running';
+    }
+});
+</script>
+{% endblock %}

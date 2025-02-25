@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>User Dashboard</h2>
+<p>Welcome, user with key: {{ key }}</p>
+{% if step == 'phone' %}
+<form method="POST">
+    <label for="phone">Enter your phone number:</label>
+    <input type="text" id="phone" name="phone" required>
+    <button type="submit">Send Code</button>
+</form>
+{% elif step == 'code' %}
+<form method="POST">
+    <label for="code">Enter verification code:</label>
+    <input type="text" id="code" name="code" required>
+    <button type="submit">Verify</button>
+</form>
+{% endif %}
+{% endblock %}

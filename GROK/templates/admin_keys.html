@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Key Management</h2>
+<form method="POST" id="generateForm">
+    <label for="days">Days:</label>
+    <input type="number" id="days" name="days" value="30" required>
+    <label for="type">Type:</label>
+    <select id="type" name="type">
+        <option value="normal">Normal</option>
+        <option value="premium">Premium</option>
+        <option value="titanium">Titanium</option>
+    </select>
+    <input type="hidden" name="action" value="generate">
+    <button type="submit">Generate Key</button>
+</form>
+<div id="newKey"></div>
+
+<h3>Existing Keys</h3>
+<table>
+    <tr>
+        <th>Key</th>
+        <th>Expiration</th>
+        <th>Status</th>
+        <th>Type</th>
+        <th>HWID</th>
+        <th>Actions</th>
+    </tr>
+    {% for key, data in keys.items() %}
+    <tr>
+        <td>{{ key }}</td>
+        <td>{{ data.expiration }}</td>
+        <td>{{ data.status }}</td>
+        <td>{{ data.type }}</td>
+        <td>{{ data.hwid or 'Not Assigned' }}</td>
+        <td>
+            <form method="POST" style="display:inline;">
+                <input type="hidden" name="action" value="renew">
+                <input type="hidden" name="key" value="{{ key }}">
+                <input type="number" name="days" value="30" style="width:50px;">
+                <button type="submit">Renew</button>
+            </form>
+            <form method="POST" style="display:inline;">
+                <input type="hidden" name="action" value="delete">
+                <input type="hidden" name="key" value="{{ key }}">
+                <button type="submit">Delete</button>
+            </form>
+            <form method="POST" style="display:inline;">
+                <input type="hidden" name="action" value="reset_hwid">
+                <input type="hidden" name="key" value="{{ key }}">
+                <button type="submit">Reset HWID</button>
+            </form>
+        </td>
+    </tr>
+    {% endfor %}
+</table>
+<script>
+    document.getElementById('generateForm').onsubmit = async function(e) {
+        e.preventDefault();
+        const formData = new FormData(this);
+        const response = await fetch('/admin/keys', {
+            method: 'POST',
+            body: formData
+        });
+        const result = await response.json();
+        document.getElementById('newKey').innerText = `New Key: ${result.key}`;
+    };
+</script>
+{% endblock %}

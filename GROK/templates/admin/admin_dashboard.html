@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="container">
+    <h1>Admin Dashboard</h1>
+    <a href="{{ url_for('admin_generate_key') }}">Generate New Key</a>
+    <table>
+        <tr>
+            <th>Key</th>
+            <th>User</th>
+            <th>Expiration</th>
+            <th>Type</th>
+            <th>Status</th>
+            <th>Actions</th>
+        </tr>
+        {% for key, data in keys.items() %}
+        <tr>
+            <td>{{ key }}</td>
+            <td>{{ data.user }}</td>
+            <td>{{ data.expiration }}</td>
+            <td>{{ data.type }}</td>
+            <td>{{ data.status }}</td>
+            <td>
+                <form action="{{ url_for('admin_renew_key', key=key) }}" method="POST">
+                    <input type="number" name="days" placeholder="Days">
+                    <button type="submit">Renew</button>
+                </form>
+                <a href="{{ url_for('admin_delete_key', key=key) }}">Delete</a>
+                <a href="{{ url_for('admin_reset_hwid', key=key) }}">Reset HWID</a>
+            </td>
+        </tr>
+        {% endfor %}
+    </table>
+</div>
+{% endblock %}
