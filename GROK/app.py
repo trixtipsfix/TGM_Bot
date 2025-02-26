@@ -10,10 +10,13 @@ import random
 import string
 from datetime import datetime, timedelta
 import threading
+from functools import wraps
 
 app = Flask(__name__)
 app.secret_key = 'verysecseckey'  # Change this to a secure key in production
-
+# Admin credentials (hardcoded for simplicity; use a database in production)
+ADMIN_USERNAME = "admin"
+ADMIN_PASSWORD = "securepassword123"  # Change this in production
 # Configuration
 BASE_CONFIG_DIR = "./configs"
 
@@ -47,7 +50,7 @@ def save_user_config(key, config_data):
 
 @app.route('/')
 def index():
-    return redirect(url_for('login'))
+    return render_template('home.html')
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -272,13 +275,38 @@ def dashboard():
     
     bot_status = 'running' if session['key'] in active_clients else 'stopped'
     return render_template('dashboard.html', config=config, bot_status=bot_status)
+# Admin authentication decorator
+def admin_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'admin_logged_in' not in session:
+            return redirect(url_for('admin_login'))
+        return f(*args, **kwargs)
+    return decorated_function
+@app.route('/admin/login', methods=['GET', 'POST'])
+def admin_login():
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
+            session['admin_logged_in'] = True
+            return redirect(url_for('admin_dashboard'))
+        return render_template('admin/admin_login.html', error="Invalid credentials")
+    return render_template('admin/admin_login.html')
+
+@app.route('/admin/logout')
+def admin_logout():
+    session.pop('admin_logged_in', None)
+    return redirect(url_for('admin_login'))
 
 @app.route('/admin')
+@admin_required
 def admin_dashboard():
     keys = load_keys()
     return render_template('admin/admin_dashboard.html', keys=keys)
 
 @app.route('/admin/generate_key', methods=['GET', 'POST'])
+@admin_required
 def admin_generate_key():
     if request.method == 'POST':
         days = int(request.form['days'])
@@ -309,6 +337,7 @@ def admin_generate_key():
     return render_template('admin/generate_key.html')
 
 @app.route('/admin/renew_key/<key>', methods=['POST'])
+@admin_required
 def admin_renew_key(key):
     days = int(request.form['days'])
     keys_data = load_keys()
@@ -321,6 +350,7 @@ def admin_renew_key(key):
     return redirect(url_for('admin_dashboard'))
 
 @app.route('/admin/delete_key/<key>')
+@admin_required
 def admin_delete_key(key):
     keys_data = load_keys()
     if key in keys_data:
@@ -336,6 +366,7 @@ def admin_delete_key(key):
     return redirect(url_for('admin_dashboard'))
 
 @app.route('/admin/reset_hwid/<key>')
+@admin_required
 def admin_reset_hwid(key):
     keys_data = load_keys()
     if key in keys_data:

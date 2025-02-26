@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="hero">
+    <h1>Welcome to Telegram Bot Platform</h1>
+    <p class="subtitle">Automate your Telegram experience with our powerful message forwarding bot.</p>
+    <div class="cta-buttons">
+        <a href="{{ url_for('login') }}" class="cta-btn primary">Login</a>
+        <a href="https://discord.gg/6c6YTGku" target="_blank" class="cta-btn secondary">Get a Key</a>
+    </div>
+</div>
+<div class="features">
+    <h2>Why Choose Us?</h2>
+    <div class="feature-grid">
+        <div class="feature-card">
+            <i class="fas fa-robot"></i>
+            <h3>Smart Forwarding</h3>
+            <p>Automatically forward messages matching specific patterns to your chosen chat.</p>
+        </div>
+        <div class="feature-card">
+            <i class="fas fa-lock"></i>
+            <h3>Secure Access</h3>
+            <p>Unique keys and HWID binding ensure your bot stays secure.</p>
+        </div>
+        <div class="feature-card">
+            <i class="fas fa-tachometer-alt"></i>
+            <h3>Tiered Performance</h3>
+            <p>Choose from Normal, Premium, or Titanium plans for optimized forwarding speeds.</p>
+        </div>
+    </div>
+</div>
+<div class="about">
+    <h2>About the Platform</h2>
+    <p>
+        The Telegram Bot Platform is designed for users who need seamless message automation. 
+        Whether you're managing groups, channels, or personal chats, our bot ensures your messages 
+        reach the right destination with minimal delay. Join our Discord community to get started!
+    </p>
+</div>
+{% endblock %}

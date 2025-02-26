@@ -6,12 +6,45 @@
 </head>
 <body>
     <nav>
-        {% if session.key %}
-            <a href="{{ url_for('dashboard') }}">Dashboard</a>
-            <a href="{{ url_for('login') }}">Logout</a>
-        {% endif %}
+        <div class="logo">
+            <img src="{{ url_for('static', filename='images/small.png') }}" alt="Logo">
+        </div>
+        <div class="nav-links">
+            {% if session.key %}
+                <a href="{{ url_for('dashboard') }}">Dashboard</a>
+                <a href="{{ url_for('login') }}">Logout</a>
+            {% endif %}
+            {% if session.admin_logged_in %}
+                <a href="{{ url_for('admin_dashboard') }}">Admin</a>
+                <a href="{{ url_for('admin_logout') }}">Admin Logout</a>
+            {% endif %}
+            <a href="https://discord.gg/6c6YTGku" target="_blank">Get Key on Discord</a>
+            <button class="theme-toggle" onclick="toggleTheme()">🌙</button>
+        </div>
     </nav>
-    {% block content %}{% endblock %}
+    <div class="container">
+        {% block content %}{% endblock %}
+    </div>
+    <script>
+        function toggleTheme() {
+            const body = document.body;
+            const currentTheme = body.getAttribute('data-theme');
+            if (currentTheme === 'dark') {
+                body.removeAttribute('data-theme');
+                localStorage.setItem('theme', 'light');
+            } else {
+                body.setAttribute('data-theme', 'dark');
+                localStorage.setItem('theme', 'dark');
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const savedTheme = localStorage.getItem('theme');
+            if (savedTheme === 'dark') {
+                document.body.setAttribute('data-theme', 'dark');
+            }
+        });
+    </script>
     <script src="{{ url_for('static', filename='js/script.js') }}"></script>
 </body>
 </html>

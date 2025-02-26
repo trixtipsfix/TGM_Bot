@@ -1,12 +1,12 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="container">
+<div class="card">
     <h1>Login</h1>
     <form id="login-form">
         <input type="text" name="key" placeholder="Enter your key" required>
         <button type="submit">Login</button>
     </form>
-    <div id="error-message"></div>
+    <div id="error-message" class="status-message"></div>
 </div>
 <script>
 document.getElementById('login-form').addEventListener('submit', async (e) => {
