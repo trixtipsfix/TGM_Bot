@@ -3,6 +3,7 @@
 <head>
     <title>Telegram Bot Platform</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
 </head>
 <body>
     <nav>
@@ -10,15 +11,28 @@
             <img src="{{ url_for('static', filename='images/small.png') }}" alt="Logo">
         </div>
         <div class="nav-links">
+            <a href="{{ url_for('index') }}">Home</a>
             {% if session.key %}
                 <a href="{{ url_for('dashboard') }}">Dashboard</a>
                 <a href="{{ url_for('login') }}">Logout</a>
+                <span class="validity">
+                    <i class="fas fa-key"></i> Key Validity: 
+                    {% if validity_days is not none %}
+                        {% if validity_days > 0 %}
+                            {{ validity_days }} days
+                        {% else %}
+                            Expired
+                        {% endif %}
+                    {% else %}
+                        N/A
+                    {% endif %}
+                </span>
             {% endif %}
             {% if session.admin_logged_in %}
                 <a href="{{ url_for('admin_dashboard') }}">Admin</a>
                 <a href="{{ url_for('admin_logout') }}">Admin Logout</a>
             {% endif %}
-            <a href="https://discord.gg/6c6YTGku" target="_blank">Get Key on Discord</a>
+            <a href="https://discord.gg/your-discord-invite" target="_blank">Get Key on Discord</a>
             <button class="theme-toggle" onclick="toggleTheme()">🌙</button>
         </div>
     </nav>

@@ -15,11 +15,19 @@ from functools import wraps
 app = Flask(__name__)
 app.secret_key = 'verysecseckey'  # Change this to a secure key in production
 # Admin credentials (hardcoded for simplicity; use a database in production)
+
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "securepassword123"  # Change this in production
+
 # Configuration
 BASE_CONFIG_DIR = "./configs"
 
+# Delay times for key categories (editable by admin)
+DELAY_TIMES = {
+    'normal': 1.2,
+    'premium': 0.7,
+    'titanium': 0.0
+}
 # Helper functions for config management
 def ensure_config_dir():
     """Ensure the base config directory exists."""
@@ -50,7 +58,8 @@ def save_user_config(key, config_data):
 
 @app.route('/')
 def index():
-    return render_template('home.html')
+    validity_days = get_key_validity_days(session.get('key')) if 'key' in session else None
+    return render_template('home.html', validity_days=validity_days)
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -64,7 +73,8 @@ def login():
                 return redirect(url_for('setup'))
             return redirect(url_for('dashboard'))
         return jsonify({'error': 'Invalid or expired key'}), 401
-    return render_template('login.html')
+    validity_days = get_key_validity_days(session.get('key')) if 'key' in session else None
+    return render_template('login.html', validity_days=validity_days)
 
 @app.route('/setup', methods=['GET', 'POST'])
 def setup():
@@ -82,7 +92,8 @@ def setup():
         }
         save_user_config(session['key'], config)
         return jsonify({'success': True})
-    return render_template('setup.html')
+    validity_days = get_key_validity_days(session['key'])
+    return render_template('setup.html', validity_days=validity_days)
 
 @app.route('/telegram_auth', methods=['POST'])
 async def telegram_auth():
@@ -191,6 +202,7 @@ def run_bot_in_thread(key, client, config):
                         keys_data = load_keys()
                         key_data = keys_data.get(key, {})
                         delay = {'normal': 1.2, 'premium': 0.7, 'titanium': 0}.get(key_data.get('type', 'normal'), 1.2)
+                        delay = DELAY_TIMES.get(key_data.get('type', 'normal'), 1.2)
                         print(f"DEBUG: Message matches pattern, forwarding with delay {delay}s")
                         await asyncio.sleep(delay)
                         await client.send_message(config['chat_destino'], message_text)
@@ -274,7 +286,8 @@ def dashboard():
         return redirect(url_for('setup'))
     
     bot_status = 'running' if session['key'] in active_clients else 'stopped'
-    return render_template('dashboard.html', config=config, bot_status=bot_status)
+    validity_days = get_key_validity_days(session['key'])
+    return render_template('dashboard.html', config=config, bot_status=bot_status, validity_days=validity_days)
 # Admin authentication decorator
 def admin_required(f):
     @wraps(f)
@@ -292,7 +305,8 @@ def admin_login():
             session['admin_logged_in'] = True
             return redirect(url_for('admin_dashboard'))
         return render_template('admin/admin_login.html', error="Invalid credentials")
-    return render_template('admin/admin_login.html')
+    validity_days = get_key_validity_days(session.get('key')) if 'key' in session else None
+    return render_template('admin/admin_login.html', validity_days=validity_days)
 
 @app.route('/admin/logout')
 def admin_logout():
@@ -303,7 +317,29 @@ def admin_logout():
 @admin_required
 def admin_dashboard():
     keys = load_keys()
-    return render_template('admin/admin_dashboard.html', keys=keys)
+    validity_days = get_key_validity_days(session.get('key')) if 'key' in session else None
+    return render_template('admin/admin_dashboard.html', keys=keys, delay_times=DELAY_TIMES, validity_days=validity_days)
+
+@app.route('/admin/update_delays', methods=['POST'])
+@admin_required
+def update_delays():
+    global DELAY_TIMES
+    DELAY_TIMES['normal'] = float(request.form['normal_delay'])
+    DELAY_TIMES['premium'] = float(request.form['premium_delay'])
+    DELAY_TIMES['titanium'] = float(request.form['titanium_delay'])
+    print(f"INFO: Updated delay times - Normal: {DELAY_TIMES['normal']}, Premium: {DELAY_TIMES['premium']}, Titanium: {DELAY_TIMES['titanium']}")
+    return redirect(url_for('admin_dashboard'))
+
+def get_key_validity_days(key):
+    """Calculate remaining days for the key's validity."""
+    keys_data = load_keys()
+    key_data = keys_data.get(key)
+    if key_data and key_data.get("expiration"):
+        expiration_date = datetime.strptime(key_data["expiration"], "%Y-%m-%d")
+        current_date = datetime.now()
+        days_left = (expiration_date - current_date).days
+        return max(0, days_left)  # Return 0 if expired
+    return 0
 
 @app.route('/admin/generate_key', methods=['GET', 'POST'])
 @admin_required
@@ -333,8 +369,8 @@ def admin_generate_key():
         })
         save_keys(keys_data)
         return redirect(url_for('admin_dashboard'))
-    
-    return render_template('admin/generate_key.html')
+    validity_days = get_key_validity_days(session.get('key')) if 'key' in session else None
+    return render_template('admin/generate_key.html', validity_days=validity_days)
 
 @app.route('/admin/renew_key/<key>', methods=['POST'])
 @admin_required

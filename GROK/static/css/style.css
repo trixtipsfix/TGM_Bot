@@ -423,3 +423,33 @@ tr:nth-child(even) {
         grid-template-columns: 1fr;
     }
 }
+
+.delay-settings {
+    margin-bottom: 40px;
+}
+
+.delay-settings h2 {
+    margin-bottom: 20px;
+}
+
+.delay-inputs {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 15px;
+    margin-bottom: 20px;
+}
+
+.delay-inputs label {
+    font-weight: bold;
+    color: var(--text);
+}
+
+.delay-inputs input {
+    width: 100px;
+}
+
+@media (max-width: 600px) {
+    .delay-inputs {
+        grid-template-columns: 1fr;
+    }
+}
