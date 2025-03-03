@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="hero">
-    <img src="{{ url_for('static', filename='images/big.png') }}" height="200px">
+    <a href="{{ url_for('index') }}"><img src="{{ url_for('static', filename='images/big.png') }}" height="200px"></a>
     <h1>Welcome to Thunder Bot</h1>
     <p class="subtitle">Automate your Telegram experience with our powerful message forwarding bot.</p>
     <div class="cta-buttons">

@@ -1,7 +1,10 @@
 {
-    "api_id": "",
-    "api_hash": "",
-    "phone": "",
-    "chats_origen": [],
-    "chat_destino": null
+    "api_id": "5541799",
+    "api_hash": "f3649a2f0c535be7493b495aa4490430",
+    "phone": "+923226383846",
+    "chats_origen": [
+        6886782563,
+        5778001487
+    ],
+    "chat_destino": 7246601341
 }

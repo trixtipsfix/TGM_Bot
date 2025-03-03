@@ -453,3 +453,11 @@ tr:nth-child(even) {
         grid-template-columns: 1fr;
     }
 }
+
+.admin-links {
+    margin-left: 20px;
+    padding-left: 20px;
+    border-left: 1px solid var(--border);
+    display: flex;
+    gap: 20px;
+}

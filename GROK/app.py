@@ -14,8 +14,8 @@ from functools import wraps
 
 app = Flask(__name__)
 app.secret_key = 'verysecseckey'  # Change this to a secure key in production
-# Admin credentials (hardcoded for simplicity; use a database in production)
 
+# Admin credentials (hardcoded for simplicity; use a database in production)
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "securepassword123"  # Change this in production
 
@@ -28,17 +28,15 @@ DELAY_TIMES = {
     'premium': 0.7,
     'titanium': 0.0
 }
-# Helper functions for config management
+
+# Helper functions
 def ensure_config_dir():
-    """Ensure the base config directory exists."""
     os.makedirs(BASE_CONFIG_DIR, exist_ok=True)
 
 def get_user_config_path(key):
-    """Get the config path for a specific user."""
     return os.path.join(BASE_CONFIG_DIR, key, "config.json")
 
 def load_user_config(key):
-    """Load user configuration from file."""
     config_path = get_user_config_path(key)
     try:
         if os.path.exists(config_path):
@@ -49,12 +47,80 @@ def load_user_config(key):
         return None
 
 def save_user_config(key, config_data):
-    """Save user configuration to file."""
     user_folder = os.path.join(BASE_CONFIG_DIR, key)
     os.makedirs(user_folder, exist_ok=True)
     config_path = get_user_config_path(key)
     with open(config_path, 'w') as f:
         json.dump(config_data, f, indent=4)
+
+def get_key_validity_days(key):
+    keys_data = load_keys()
+    key_data = keys_data.get(key)
+    if key_data and key_data.get("expiration"):
+        expiration_date = datetime.strptime(key_data["expiration"], "%Y-%m-%d")
+        current_date = datetime.now()
+        days_left = (expiration_date - current_date).days
+        return max(0, days_left)
+    return None
+
+async def check_session_validity(key, config):
+    client = TelegramClient(
+        os.path.join(BASE_CONFIG_DIR, key, "session_name"),
+        config['api_id'],
+        config['api_hash']
+    )
+    try:
+        await client.connect()
+        authorized = await client.is_user_authorized()
+        await client.disconnect()
+        return authorized
+    except Exception as e:
+        print(f"ERROR: Thunderbot session check failed: {str(e)}")
+        await client.disconnect()
+        return False
+
+def is_session_valid(key, config):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    result = loop.run_until_complete(check_session_validity(key, config))
+    loop.close()
+    return result
+
+async def get_chats(key, config):
+    client = TelegramClient(
+        os.path.join(BASE_CONFIG_DIR, key, "session_name"),
+        config['api_id'],
+        config['api_hash']
+    )
+    try:
+        await client.connect()
+        if not await client.is_user_authorized():
+            await client.disconnect()
+            return None
+        dialogs = await client.get_dialogs()
+        chats = [{'id': dialog.id, 'name': dialog.name or 'Sin Nombre'} for dialog in dialogs]
+        await client.disconnect()
+        return chats
+    except Exception as e:
+        print(f"ERROR: Failed to fetch chats for editing: {str(e)}")
+        await client.disconnect()
+        return None
+
+def fetch_chats_sync(key, config):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    chats = loop.run_until_complete(get_chats(key, config))
+    loop.close()
+    return chats
+
+# Admin authentication decorator
+def admin_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'admin_logged_in' not in session:
+            return redirect(url_for('admin_login'))
+        return f(*args, **kwargs)
+    return decorated_function
 
 @app.route('/')
 def index():
@@ -71,10 +137,29 @@ def login():
             config = load_user_config(key)
             if not config or not all(k in config for k in ['api_id', 'api_hash', 'phone']):
                 return redirect(url_for('setup'))
+            
+            if not is_session_valid(key, config):
+                return redirect(url_for('setup'))
             return redirect(url_for('dashboard'))
-        return jsonify({'error': 'Invalid or expired key'}), 401
+        return render_template('login.html', error="Invalid or expired key", validity_days=None)
+    
     validity_days = get_key_validity_days(session.get('key')) if 'key' in session else None
-    return render_template('login.html', validity_days=validity_days)
+    return render_template('login.html', validity_days=validity_days, error=None)
+
+@app.route('/logout')
+def logout():
+    if 'key' in session:
+        key = session['key']
+        if key in active_clients:
+            client = active_clients[key]
+            if client.is_connected():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(client.disconnect())
+                loop.close()
+            del active_clients[key]
+    session.pop('key', None)
+    return redirect(url_for('index'))
 
 @app.route('/setup', methods=['GET', 'POST'])
 def setup():
@@ -110,11 +195,11 @@ async def telegram_auth():
         config['api_id'],
         config['api_hash']
     )
-    print("INFO: Client Created")
+    print("INFO: Thunderbot Client Created")
     
     try:
         await client.connect()
-        print("INFO: Client Connected")
+        print("INFO: Thunderbot Client Connected")
         
         if not await client.is_user_authorized():
             if 'code' not in data:
@@ -141,17 +226,17 @@ async def telegram_auth():
                         code=data['code'],
                         phone_code_hash=data['phone_code_hash']
                     )
-                    print("INFO: Got the Code. Signing in....")
+                    print("INFO: Thunderbot Signed In")
                     dialogs = await client.get_dialogs()
                     if not isinstance(dialogs, (list, tuple)):
                         raise ValueError(f"Expected list of dialogs, got {type(dialogs)}: {dialogs}")
                     chats = [{'id': dialog.id, 'name': dialog.name or 'Sin Nombre'} for dialog in dialogs]
                     await client.disconnect()
-                    print("INFO: Successfully retrieved chats")
+                    print("INFO: Thunderbot Successfully retrieved chats")
                     return jsonify({'status': 'success', 'chats': chats})
                 except Exception as e:
                     await client.disconnect()
-                    print(f"ERROR: Sign-in failed: {str(e)}")
+                    print(f"ERROR: Thunderbot Sign-in failed: {str(e)}")
                     return jsonify({'error': f'Sign-in failed: {str(e)}'}), 400
         
         dialogs = await client.get_dialogs()
@@ -159,15 +244,38 @@ async def telegram_auth():
             raise ValueError(f"Expected list of dialogs, got {type(dialogs)}: {dialogs}")
         chats = [{'id': dialog.id, 'name': dialog.name or 'Sin Nombre'} for dialog in dialogs]
         await client.disconnect()
-        print("INFO: Successfully retrieved chats for authorized user")
+        print("INFO: Thunderbot Successfully retrieved chats for authorized user")
         return jsonify({'chats': chats})
     
     except Exception as e:
         if client.is_connected():
             await client.disconnect()
-        print(f"ERROR: Telegram connection failed: {str(e)}")
+        print(f"ERROR: Thunderbot Connection failed: {str(e)}")
         return jsonify({'error': f'Failed to connect to Telegram: {str(e)}'}), 500
+
+@app.route('/edit_chats', methods=['GET', 'POST'])
+def edit_chats():
+    if 'key' not in session:
+        return redirect(url_for('login'))
     
+    config = load_user_config(session['key'])
+    if not config:
+        return redirect(url_for('setup'))
+    
+    if request.method == 'POST':
+        data = request.json
+        config['chats_origen'] = data['source_chats']
+        config['chat_destino'] = data['dest_chat']
+        save_user_config(session['key'], config)
+        return jsonify({'success': True})
+    
+    chats = fetch_chats_sync(session['key'], config)
+    if chats is None:
+        return redirect(url_for('setup'))
+    
+    validity_days = get_key_validity_days(session['key'])
+    return render_template('edit_chats.html', chats=chats, config=config, validity_days=validity_days)
+
 @app.route('/save_chats', methods=['POST'])
 def save_chats():
     if 'key' not in session:
@@ -182,14 +290,16 @@ def save_chats():
     config['chat_destino'] = data['dest_chat']
     save_user_config(session['key'], config)
     return jsonify({'success': True})
+
 # Store active clients
 active_clients = {}
+
 def run_bot_in_thread(key, client, config):
     async def bot_loop():
         try:
             await client.connect()
             if not await client.is_user_authorized():
-                print(f"ERROR: Client not authorized for key {key}")
+                print(f"ERROR: Thunderbot not authorized for key {key}")
                 return
 
             @client.on(events.NewMessage(chats=config['chats_origen']))
@@ -197,33 +307,31 @@ def run_bot_in_thread(key, client, config):
                 try:
                     message_text = event.message.message or ""
                     chat_id = event.chat_id
-                    print(f"DEBUG: New message received in chat {chat_id}: {message_text}")
+                    print(f"DEBUG: Thunderbot received message in chat {chat_id}: {message_text}")
                     if PATTERN_44.search(message_text):
                         keys_data = load_keys()
                         key_data = keys_data.get(key, {})
-                        delay = {'normal': 1.2, 'premium': 0.7, 'titanium': 0}.get(key_data.get('type', 'normal'), 1.2)
                         delay = DELAY_TIMES.get(key_data.get('type', 'normal'), 1.2)
-                        print(f"DEBUG: Message matches pattern, forwarding with delay {delay}s")
+                        print(f"DEBUG: Thunderbot message matches pattern, forwarding with delay {delay}s")
                         await asyncio.sleep(delay)
                         await client.send_message(config['chat_destino'], message_text)
-                        print(f"DEBUG: Message forwarded to {config['chat_destino']}")
+                        print(f"DEBUG: Thunderbot message forwarded to {config['chat_destino']}")
                     else:
-                        print("DEBUG: Message ignored (no 44-char pattern match)")
+                        print("DEBUG: Thunderbot message ignored (no 44-char pattern match)")
                 except Exception as e:
-                    print(f"ERROR: Forwarding message failed: {str(e)}")
+                    print(f"ERROR: Thunderbot forwarding failed: {str(e)}")
 
-            print(f"INFO: Bot loop started for key {key} with source chats {config['chats_origen']}")
+            print(f"INFO: Thunderbot loop started for key {key} with source chats {config['chats_origen']}")
             await client.run_until_disconnected()
-            print(f"INFO: Bot loop stopped for key {key}")
+            print(f"INFO: Thunderbot loop stopped for key {key}")
         except Exception as e:
-            print(f"ERROR: Bot loop failed for key {key}: {str(e)}")
+            print(f"ERROR: Thunderbot loop failed for key {key}: {str(e)}")
         finally:
             if client.is_connected():
                 await client.disconnect()
             if key in active_clients:
                 del active_clients[key]
 
-    # Run the async loop in a new event loop
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(bot_loop())
@@ -247,14 +355,12 @@ async def start_bot():
         config['api_hash']
     )
 
-    # Start the bot in a background thread
     thread = threading.Thread(target=run_bot_in_thread, args=(key, client, config), daemon=True)
     active_clients[key] = client
     thread.start()
 
-    # Wait briefly to ensure it starts
     await asyncio.sleep(1)
-    print(f"INFO: Bot successfully started for key {key}")
+    print(f"INFO: Thunderbot successfully started for key {key}")
     return jsonify({'status': 'started'})
 
 @app.route('/stop_bot', methods=['POST'])
@@ -269,11 +375,11 @@ async def stop_bot():
             if client.is_connected():
                 await client.disconnect()
             del active_clients[key]
-            print(f"INFO: Bot stopped for key {key}")
+            print(f"INFO: Thunderbot stopped for key {key}")
             return jsonify({'status': 'stopped'})
         except Exception as e:
-            print(f"ERROR: Failed to stop bot: {str(e)}")
-            return jsonify({'error': f'Failed to stop bot: {str(e)}'}), 500
+            print(f"ERROR: Failed to stop Thunderbot: {str(e)}")
+            return jsonify({'error': f'Failed to stop Thunderbot: {str(e)}'}), 500
     return jsonify({'status': 'not_running'})
 
 @app.route('/dashboard')
@@ -288,14 +394,7 @@ def dashboard():
     bot_status = 'running' if session['key'] in active_clients else 'stopped'
     validity_days = get_key_validity_days(session['key'])
     return render_template('dashboard.html', config=config, bot_status=bot_status, validity_days=validity_days)
-# Admin authentication decorator
-def admin_required(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if 'admin_logged_in' not in session:
-            return redirect(url_for('admin_login'))
-        return f(*args, **kwargs)
-    return decorated_function
+
 @app.route('/admin/login', methods=['GET', 'POST'])
 def admin_login():
     if request.method == 'POST':
@@ -304,9 +403,9 @@ def admin_login():
         if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
             session['admin_logged_in'] = True
             return redirect(url_for('admin_dashboard'))
-        return render_template('admin/admin_login.html', error="Invalid credentials")
+        return render_template('admin/admin_login.html', error="Invalid credentials", validity_days=None)
     validity_days = get_key_validity_days(session.get('key')) if 'key' in session else None
-    return render_template('admin/admin_login.html', validity_days=validity_days)
+    return render_template('admin/admin_login.html', validity_days=validity_days, error=None)
 
 @app.route('/admin/logout')
 def admin_logout():
@@ -327,19 +426,8 @@ def update_delays():
     DELAY_TIMES['normal'] = float(request.form['normal_delay'])
     DELAY_TIMES['premium'] = float(request.form['premium_delay'])
     DELAY_TIMES['titanium'] = float(request.form['titanium_delay'])
-    print(f"INFO: Updated delay times - Normal: {DELAY_TIMES['normal']}, Premium: {DELAY_TIMES['premium']}, Titanium: {DELAY_TIMES['titanium']}")
+    print(f"INFO: Thunderbot updated delay times - Normal: {DELAY_TIMES['normal']}, Premium: {DELAY_TIMES['premium']}, Titanium: {DELAY_TIMES['titanium']}")
     return redirect(url_for('admin_dashboard'))
-
-def get_key_validity_days(key):
-    """Calculate remaining days for the key's validity."""
-    keys_data = load_keys()
-    key_data = keys_data.get(key)
-    if key_data and key_data.get("expiration"):
-        expiration_date = datetime.strptime(key_data["expiration"], "%Y-%m-%d")
-        current_date = datetime.now()
-        days_left = (expiration_date - current_date).days
-        return max(0, days_left)  # Return 0 if expired
-    return 0
 
 @app.route('/admin/generate_key', methods=['GET', 'POST'])
 @admin_required
@@ -369,6 +457,7 @@ def admin_generate_key():
         })
         save_keys(keys_data)
         return redirect(url_for('admin_dashboard'))
+    
     validity_days = get_key_validity_days(session.get('key')) if 'key' in session else None
     return render_template('admin/generate_key.html', validity_days=validity_days)
 
@@ -391,7 +480,12 @@ def admin_delete_key(key):
     keys_data = load_keys()
     if key in keys_data:
         if key in active_clients:
-            active_clients[key].disconnect()
+            client = active_clients[key]
+            if client.is_connected():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(client.disconnect())
+                loop.close()
             del active_clients[key]
         del keys_data[key]
         save_keys(keys_data)

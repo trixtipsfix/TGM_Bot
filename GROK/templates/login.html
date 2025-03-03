@@ -1,12 +1,16 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="card">
-    <h1>Login</h1>
-    <form id="login-form">
-        <input type="text" name="key" placeholder="Enter your key" required>
+    <h1>Login to Thunderbot</h1>
+    <form id="login-form" method="POST">
+        <input type="text" name="key" placeholder="Enter your Thunderbot key" required>
         <button type="submit">Login</button>
     </form>
-    <div id="error-message" class="status-message"></div>
+    {% if error %}
+        <div id="error-message" class="status-message error">{{ error }}</div>
+    {% else %}
+        <div id="error-message" class="status-message"></div>
+    {% endif %}
 </div>
 <script>
 document.getElementById('login-form').addEventListener('submit', async (e) => {
@@ -19,8 +23,9 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
     if (response.ok) {
         window.location.href = '/dashboard';
     } else {
-        const data = await response.json();
-        document.getElementById('error-message').textContent = data.error;
+        const data = await response.text();
+        // Since we're rendering the template now, reload the page or manually set the error
+        window.location.reload(); // Reload to show the error from the server
     }
 });
 </script>

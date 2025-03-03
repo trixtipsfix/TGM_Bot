@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+    <h1>Edit Thunderbot Chats</h1>
+    <div id="chat-selection">
+        <h2>Select Chats</h2>
+        <div id="chat-list">
+            <h3>Source Chats (select multiple):</h3>
+            {% for chat in chats %}
+                <label>
+                    <input type="checkbox" name="source" value="{{ chat.id }}"
+                        {% if chat.id in config.chats_origen %}checked{% endif %}>
+                    {{ chat.name }}
+                </label>
+            {% endfor %}
+            <h3>Destination Chat (select one):</h3>
+            {% for chat in chats %}
+                <label>
+                    <input type="radio" name="dest" value="{{ chat.id }}"
+                        {% if chat.id == config.chat_destino %}checked{% endif %}>
+                    {{ chat.name }}
+                </label>
+            {% endfor %}
+        </div>
+        <button id="save-chats">Save Configuration</button>
+    </div>
+    <div id="status-message"></div>
+</div>
+<script>
+document.getElementById('save-chats').addEventListener('click', async () => {
+    const sourceChats = Array.from(document.querySelectorAll('input[name="source"]:checked'))
+        .map(input => parseInt(input.value));
+    const destChat = parseInt(document.querySelector('input[name="dest"]:checked')?.value);
+    
+    if (!sourceChats.length || !destChat) {
+        document.getElementById('status-message').textContent = 'Please select at least one source chat and one destination chat';
+        return;
+    }
+
+    const response = await fetch('/edit_chats', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source_chats: sourceChats, dest_chat: destChat })
+    });
+
+    if (response.ok) {
+        window.location.href = '/dashboard';
+    } else {
+        document.getElementById('status-message').textContent = 'Failed to save chat configuration';
+    }
+});
+</script>
+{% endblock %}
