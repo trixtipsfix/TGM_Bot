@@ -18,4 +18,13 @@
         <button id="save-chats">Save Configuration</button>
     </div>
 </div>
+<script>
+    if (response.status === 400) {
+        const data = await response.json();
+        if (data.error.includes("Code expired")) {
+            // Trigger a new code request
+            await fetch('/telegram_auth', { method: 'POST', body: JSON.stringify({}) });
+        }
+    }
+</script>
 {% endblock %}

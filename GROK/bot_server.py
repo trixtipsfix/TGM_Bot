@@ -26,7 +26,7 @@ def validate_and_associate_key(key):
 
     if not key_data:
         print("[ERROR]: La KEY no se encontró.")
-        sys.exit(1)
+        return False
 
     expiration_date_str = key_data.get("expiration")
     if expiration_date_str:
@@ -35,7 +35,7 @@ def validate_and_associate_key(key):
 
         if current_date > expiration_date:
             print("[ERROR]: La clave de licencia ha caducado.")
-            sys.exit(1)
+            return False
 
         # Calcular días restantes
         days_left = (expiration_date - current_date).days
@@ -44,7 +44,7 @@ def validate_and_associate_key(key):
 
     if key_data.get("status") != "active":
         print("[ERROR]: La clave no está activa.")
-        sys.exit(1)
+        return False
 
     current_hwid = get_hwid()
     if not current_hwid:
