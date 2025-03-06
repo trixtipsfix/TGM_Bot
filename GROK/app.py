@@ -75,6 +75,18 @@ async def check_session_validity(session_string, api_id, api_hash):
         await client.disconnect()
         return False
 
+async def revoke_session(session_string, api_id, api_hash):
+    client = TelegramClient(StringSession(session_string), api_id, api_hash)
+    try:
+        await client.connect()
+        if await client.is_user_authorized():
+            await client.log_out()
+            print(f"INFO: Previous session revoked for key")
+        await client.disconnect()
+    except Exception as e:
+        print(f"ERROR: Failed to revoke previous session: {str(e)}")
+        await client.disconnect()
+
 def is_session_valid(session_string, api_id, api_hash):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -105,13 +117,28 @@ def fetch_chats_sync(session_string, api_id, api_hash):
     loop.close()
     return chats
 
-# Admin authentication decorator
+# Decorators
 def admin_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if 'admin_logged_in' not in session:
             flash("Please log in as admin to access this page.", "error")
             return redirect(url_for('admin_login'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+def key_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'key' not in session:
+            flash("Please log in to access this page.", "error")
+            return redirect(url_for('login'))
+        validity_days = get_key_validity_days(session['key'])
+        if validity_days is None or validity_days <= 0:
+            flash("Your key has expired. Please renew it or use a valid key.", "error")
+            session.pop('key', None)
+            session.pop('telegram_session', None)
+            return redirect(url_for('login'))
         return f(*args, **kwargs)
     return decorated_function
 
@@ -125,6 +152,21 @@ def login():
     if request.method == 'POST':
         key = request.form['key']
         if validate_and_associate_key(key):
+            validity_days = get_key_validity_days(key)
+            if validity_days is None or validity_days <= 0:
+                flash("This key has expired. Please renew it or use a valid key.", "error")
+                return render_template('login.html', validity_days=None)
+            
+            # Revoke any existing session
+            if 'telegram_session' in session:
+                config = load_user_config(key)
+                if config and all(k in config for k in ['api_id', 'api_hash']):
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    loop.run_until_complete(revoke_session(session['telegram_session'], config['api_id'], config['api_hash']))
+                    loop.close()
+                    print(f"INFO: Revoked previous session for key {key}")
+            
             session['key'] = key
             ensure_config_dir()
             config = load_user_config(key)
@@ -149,6 +191,7 @@ def login():
     return render_template('login.html', validity_days=validity_days)
 
 @app.route('/logout')
+@key_required
 def logout():
     if 'key' in session:
         key = session['key']
@@ -160,11 +203,8 @@ def logout():
     return redirect(url_for('index'))
 
 @app.route('/setup', methods=['GET', 'POST'])
+@key_required
 def setup():
-    if 'key' not in session:
-        flash("Please log in to set up Thunderbot.", "error")
-        return redirect(url_for('login'))
-    
     if request.method == 'POST':
         data = request.json
         config = {
@@ -181,16 +221,13 @@ def setup():
     return render_template('setup.html', validity_days=validity_days)
 
 @app.route('/telegram_auth', methods=['POST'])
+@key_required
 async def telegram_auth():
-    if 'key' not in session:
-        return jsonify({'error': 'Unauthorized'}), 401
-    
     data = request.json
     config = load_user_config(session['key'])
     if not config:
         return jsonify({'error': 'Configuration not found'}), 500
     
-    # Use existing session if available, otherwise create a new one
     session_string = session.get('telegram_session_temp', '')
     client = TelegramClient(StringSession(session_string), config['api_id'], config['api_hash'])
     print("INFO: Thunderbot Client Created")
@@ -203,7 +240,7 @@ async def telegram_auth():
             if 'code' not in data:
                 try:
                     sent_code = await client.send_code_request(config['phone'])
-                    session['telegram_session_temp'] = client.session.save()  # Save temp session after code request
+                    session['telegram_session_temp'] = client.session.save()
                     print(f"INFO: Code Required, phone_code_hash: {sent_code.phone_code_hash}, session: {session['telegram_session_temp']}")
                     await client.disconnect()
                     return jsonify({
@@ -228,8 +265,8 @@ async def telegram_auth():
                         phone_code_hash=data['phone_code_hash']
                     )
                     print("INFO: Thunderbot Signed In")
-                    session['telegram_session'] = client.session.save()  # Save final session to client-side
-                    session.pop('telegram_session_temp', None)  # Clear temp session
+                    session['telegram_session'] = client.session.save()
+                    session.pop('telegram_session_temp', None)
                     dialogs = await client.get_dialogs()
                     if not isinstance(dialogs, (list, tuple)):
                         raise ValueError(f"Expected list of dialogs, got {type(dialogs)}: {dialogs}")
@@ -260,11 +297,8 @@ async def telegram_auth():
         return jsonify({'error': f'Failed to connect to Telegram: {str(e)}'}), 500
 
 @app.route('/edit_chats', methods=['GET', 'POST'])
+@key_required
 def edit_chats():
-    if 'key' not in session:
-        flash("Please log in to edit chats.", "error")
-        return redirect(url_for('login'))
-    
     config = load_user_config(session['key'])
     if not config:
         flash("Configuration not found. Please set up Thunderbot.", "error")
@@ -291,10 +325,8 @@ def edit_chats():
     return render_template('edit_chats.html', chats=chats, config=config, validity_days=validity_days)
 
 @app.route('/save_chats', methods=['POST'])
+@key_required
 def save_chats():
-    if 'key' not in session:
-        return jsonify({'error': 'Unauthorized'}), 401
-    
     if 'telegram_session' not in session:
         return jsonify({'error': 'Session not found'}), 401
     
@@ -356,10 +388,8 @@ def run_bot_in_thread(key, session_string, config):
     loop.run_until_complete(bot_loop())
 
 @app.route('/start_bot', methods=['POST'])
+@key_required
 async def start_bot():
-    if 'key' not in session:
-        return jsonify({'error': 'Unauthorized'}), 401
-    
     if 'telegram_session' not in session:
         flash("Session not found. Please authenticate.", "warning")
         return jsonify({'error': 'Session not found'}), 401
@@ -375,7 +405,7 @@ async def start_bot():
         return jsonify({'status': 'already_running'})
 
     thread = threading.Thread(target=run_bot_in_thread, args=(key, session['telegram_session'], config), daemon=True)
-    active_clients[key] = None  # We don't store the client here anymore; it's recreated in the thread
+    active_clients[key] = None
     thread.start()
 
     await asyncio.sleep(1)
@@ -384,13 +414,11 @@ async def start_bot():
     return jsonify({'status': 'started'})
 
 @app.route('/stop_bot', methods=['POST'])
+@key_required
 async def stop_bot():
-    if 'key' not in session:
-        return jsonify({'error': 'Unauthorized'}), 401
-    
     key = session['key']
     if key in active_clients:
-        del active_clients[key]  # Thread will handle cleanup
+        del active_clients[key]
         print(f"INFO: Thunderbot stopped for key {key}")
         flash("Thunderbot stopped successfully.", "success")
         return jsonify({'status': 'stopped'})
@@ -398,18 +426,15 @@ async def stop_bot():
     return jsonify({'status': 'not_running'})
 
 @app.route('/dashboard')
+@key_required
 def dashboard():
-    if 'key' not in session:
-        flash("Please log in to access the dashboard.", "error")
-        return redirect(url_for('login'))
-    
-    if 'telegram_session' not in session:
-        flash("Session not found. Please authenticate.", "warning")
-        return redirect(url_for('setup'))
-    
     config = load_user_config(session['key'])
     if not config:
         flash("Configuration not found. Please set up Thunderbot.", "error")
+        return redirect(url_for('setup'))
+    
+    if 'telegram_session' not in session:
+        flash("Session not found. Please authenticate.", "warning")
         return redirect(url_for('setup'))
     
     bot_status = 'running' if session['key'] in active_clients else 'stopped'
@@ -515,7 +540,7 @@ def admin_delete_key(key):
     keys_data = load_keys()
     if key in keys_data:
         if key in active_clients:
-            del active_clients[key]  # Thread will handle cleanup
+            del active_clients[key]
         del keys_data[key]
         save_keys(keys_data)
         user_folder = os.path.join(BASE_CONFIG_DIR, key)
