@@ -2,8 +2,6 @@ from flask import Flask, render_template, request, jsonify, session, redirect, u
 import asyncio
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
-from bot_server import validate_and_associate_key, PATTERN_44
-from key_manager import load_keys, save_keys
 import os
 import json
 import random
@@ -11,9 +9,11 @@ import string
 from datetime import datetime, timedelta
 import threading
 from functools import wraps
+import uuid
+import re
 
 app = Flask(__name__)
-app.secret_key = 'verysecseckey'  # Required for flash messages and session
+app.secret_key = 'verysecseckey'  # Required for secure sessions; change in production
 
 # Admin credentials (hardcoded for simplicity; use a database in production)
 ADMIN_USERNAME = "admin"
@@ -29,14 +29,40 @@ DELAY_TIMES = {
     'titanium': 0.0
 }
 
-# Helper functions
+# URL pattern for message forwarding (e.g., https://pump.fun/coin/<44-char-id>)
+PATTERN_44 = re.compile(r"https://pump\.fun/coin/[a-zA-Z0-9]{44}")
+
+# Simulated key storage (replace with a real database in production)
+KEYS_FILE = "keys.json"
+
+def load_keys():
+    """Load keys from a JSON file."""
+    if os.path.exists(KEYS_FILE):
+        with open(KEYS_FILE, 'r') as f:
+            return json.load(f)
+    return {}
+
+def save_keys(keys_data):
+    """Save keys to a JSON file."""
+    with open(KEYS_FILE, 'w') as f:
+        json.dump(keys_data, f, indent=4)
+
+def validate_and_associate_key(key):
+    """Validate a key exists and is active."""
+    keys_data = load_keys()
+    return key in keys_data and keys_data[key].get("status") == "active"
+
+# Helper Functions
 def ensure_config_dir():
+    """Ensure the config directory exists."""
     os.makedirs(BASE_CONFIG_DIR, exist_ok=True)
 
 def get_user_config_path(key):
+    """Get the path to a user's config file."""
     return os.path.join(BASE_CONFIG_DIR, key, "config.json")
 
 def load_user_config(key):
+    """Load a user's configuration."""
     config_path = get_user_config_path(key)
     try:
         if os.path.exists(config_path):
@@ -47,6 +73,7 @@ def load_user_config(key):
         return None
 
 def save_user_config(key, config_data):
+    """Save a user's configuration."""
     user_folder = os.path.join(BASE_CONFIG_DIR, key)
     os.makedirs(user_folder, exist_ok=True)
     config_path = get_user_config_path(key)
@@ -54,6 +81,7 @@ def save_user_config(key, config_data):
         json.dump(config_data, f, indent=4)
 
 def get_key_validity_days(key):
+    """Calculate remaining validity days for a key."""
     keys_data = load_keys()
     key_data = keys_data.get(key)
     if key_data and key_data.get("expiration"):
@@ -63,7 +91,17 @@ def get_key_validity_days(key):
         return max(0, days_left)
     return None
 
+def is_key_deleted(key):
+    """Check if a key has been deleted."""
+    keys_data = load_keys()
+    return key not in keys_data
+
+def get_device_hwid():
+    """Get a unique hardware ID based on MAC address."""
+    return str(uuid.getnode())
+
 async def check_session_validity(session_string, api_id, api_hash):
+    """Check if a Telegram session is valid."""
     client = TelegramClient(StringSession(session_string), api_id, api_hash)
     try:
         await client.connect()
@@ -71,23 +109,25 @@ async def check_session_validity(session_string, api_id, api_hash):
         await client.disconnect()
         return authorized
     except Exception as e:
-        print(f"ERROR: Thunderbot session check failed: {str(e)}")
+        print(f"ERROR: Session check failed: {str(e)}")
         await client.disconnect()
         return False
 
 async def revoke_session(session_string, api_id, api_hash):
+    """Revoke a Telegram session."""
     client = TelegramClient(StringSession(session_string), api_id, api_hash)
     try:
         await client.connect()
         if await client.is_user_authorized():
             await client.log_out()
-            print(f"INFO: Previous session revoked for key")
+            print(f"INFO: Previous session revoked")
         await client.disconnect()
     except Exception as e:
-        print(f"ERROR: Failed to revoke previous session: {str(e)}")
+        print(f"ERROR: Failed to revoke session: {str(e)}")
         await client.disconnect()
 
 def is_session_valid(session_string, api_id, api_hash):
+    """Synchronously check session validity."""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     result = loop.run_until_complete(check_session_validity(session_string, api_id, api_hash))
@@ -95,6 +135,7 @@ def is_session_valid(session_string, api_id, api_hash):
     return result
 
 async def get_chats(session_string, api_id, api_hash):
+    """Fetch available Telegram chats."""
     client = TelegramClient(StringSession(session_string), api_id, api_hash)
     try:
         await client.connect()
@@ -106,11 +147,12 @@ async def get_chats(session_string, api_id, api_hash):
         await client.disconnect()
         return chats
     except Exception as e:
-        print(f"ERROR: Failed to fetch chats for editing: {str(e)}")
+        print(f"ERROR: Failed to fetch chats: {str(e)}")
         await client.disconnect()
         return None
 
 def fetch_chats_sync(session_string, api_id, api_hash):
+    """Synchronously fetch Telegram chats."""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     chats = loop.run_until_complete(get_chats(session_string, api_id, api_hash))
@@ -119,6 +161,7 @@ def fetch_chats_sync(session_string, api_id, api_hash):
 
 # Decorators
 def admin_required(f):
+    """Ensure the user is an admin."""
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if 'admin_logged_in' not in session:
@@ -128,63 +171,99 @@ def admin_required(f):
     return decorated_function
 
 def key_required(f):
+    """Ensure the user has a valid key."""
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if 'key' not in session:
             flash("Please log in to access this page.", "error")
             return redirect(url_for('login'))
+        if is_key_deleted(session['key']):
+            revoke_existing_session(session['key'])
+            session.pop('key', None)
+            flash("Your key has been deleted by an admin.", "error")
+            return redirect(url_for('login'))
         validity_days = get_key_validity_days(session['key'])
         if validity_days is None or validity_days <= 0:
-            flash("Your key has expired. Please renew it or use a valid key.", "error")
+            revoke_existing_session(session['key'])
             session.pop('key', None)
-            session.pop('telegram_session', None)
+            flash("Your key has expired.", "error")
+            return redirect(url_for('login'))
+        keys_data = load_keys()
+        key_data = keys_data.get(session['key'])
+        if key_data['hwid'] and key_data['hwid'] != get_device_hwid():
+            flash("This key is associated with another device.", "error")
             return redirect(url_for('login'))
         return f(*args, **kwargs)
     return decorated_function
 
+def revoke_existing_session(key):
+    """Revoke the existing Telegram session for a given key."""
+    config = load_user_config(key)
+    if config and 'session_string' in config and all(k in config for k in ['api_id', 'api_hash']):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        client = TelegramClient(StringSession(config['session_string']), config['api_id'], config['api_hash'], loop=loop)
+        loop.run_until_complete(client.connect())
+        loop.run_until_complete(client.log_out())
+        client.disconnect()  # Synchronous disconnect
+        loop.close()
+        config['session_string'] = None  # Clear the session string
+        save_user_config(key, config)
+        print(f"INFO: Revoked session for key {key}")
+
+# Routes
 @app.route('/')
 def index():
+    """Home page."""
     validity_days = get_key_validity_days(session.get('key')) if 'key' in session else None
     return render_template('home.html', validity_days=validity_days)
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
+    """User login route."""
     if request.method == 'POST':
         key = request.form['key']
         if validate_and_associate_key(key):
             validity_days = get_key_validity_days(key)
             if validity_days is None or validity_days <= 0:
-                flash("This key has expired. Please renew it or use a valid key.", "error")
+                flash("This key has expired.", "error")
+                return render_template('login.html', validity_days=None)
+            if is_key_deleted(key):
+                flash("This key has been deleted.", "error")
                 return render_template('login.html', validity_days=None)
             
-            # Revoke any existing session
-            if 'telegram_session' in session:
-                config = load_user_config(key)
-                if config and all(k in config for k in ['api_id', 'api_hash']):
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    loop.run_until_complete(revoke_session(session['telegram_session'], config['api_id'], config['api_hash']))
-                    loop.close()
-                    print(f"INFO: Revoked previous session for key {key}")
+            keys_data = load_keys()
+            key_data = keys_data.get(key)
+            current_hwid = get_device_hwid()
             
-            session['key'] = key
-            ensure_config_dir()
+            # Associate HWID if not set
+            if key_data['hwid'] is None:
+                key_data['hwid'] = current_hwid
+                save_keys(keys_data)
+            # Deny if HWID mismatch
+            elif key_data['hwid'] != current_hwid:
+                flash("This key is associated with another device.", "error")
+                return render_template('login.html', validity_days=None)
+            
+            # Revoke any existing session for this key
             config = load_user_config(key)
+            if config and 'session_string' in config and config['session_string']:
+                revoke_existing_session(key)
+            
+            # Set the key in session
+            session['key'] = key
             if not config or not all(k in config for k in ['api_id', 'api_hash', 'phone']):
                 flash("Configuration incomplete. Please set up your Thunderbot.", "warning")
                 return redirect(url_for('setup'))
             
-            if 'telegram_session' not in session:
-                flash("New device detected. Please set up Thunderbot.", "warning")
-                return redirect(url_for('setup'))
-            
-            if not is_session_valid(session['telegram_session'], config['api_id'], config['api_hash']):
-                flash("Session invalid. Please re-authenticate.", "warning")
+            # Check if session_string exists and is valid
+            if not config.get('session_string') or not is_session_valid(config['session_string'], config['api_id'], config['api_hash']):
+                flash("Please authenticate Telegram.", "warning")
                 return redirect(url_for('setup'))
             
             flash("Logged in successfully!", "success")
             return redirect(url_for('dashboard'))
-        flash("Invalid or expired key. Please try again.", "error")
+        flash("Invalid key.", "error")
         return render_template('login.html', validity_days=None)
     
     validity_days = get_key_validity_days(session.get('key')) if 'key' in session else None
@@ -193,18 +272,19 @@ def login():
 @app.route('/logout')
 @key_required
 def logout():
+    """User logout route."""
     if 'key' in session:
         key = session['key']
         if key in active_clients:
-            del active_clients[key]  # Thread will handle cleanup
+            del active_clients[key]
         session.pop('key', None)
-        session.pop('telegram_session', None)  # Clear client-side session
         flash("Logged out successfully.", "success")
     return redirect(url_for('index'))
 
 @app.route('/setup', methods=['GET', 'POST'])
 @key_required
 def setup():
+    """Setup Thunderbot configuration."""
     if request.method == 'POST':
         data = request.json
         config = {
@@ -212,7 +292,8 @@ def setup():
             "api_hash": data['api_hash'],
             "phone": data['phone'],
             "chats_origen": [],
-            "chat_destino": None
+            "chat_destino": None,
+            "session_string": None  # Initialize session_string
         }
         save_user_config(session['key'], config)
         flash("Setup saved successfully. Please authenticate with Telegram.", "success")
@@ -222,89 +303,92 @@ def setup():
 
 @app.route('/telegram_auth', methods=['POST'])
 @key_required
-async def telegram_auth():
+def telegram_auth():
+    """Authenticate with Telegram."""
     data = request.json
     config = load_user_config(session['key'])
     if not config:
+        print("ERROR: Configuration not found for key {}".format(session['key']))
         return jsonify({'error': 'Configuration not found'}), 500
+
+    session_string = session.get('telegram_session_temp', config.get('session_string', ''))
     
-    session_string = session.get('telegram_session_temp', '')
-    client = TelegramClient(StringSession(session_string), config['api_id'], config['api_hash'])
-    print("INFO: Thunderbot Client Created")
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    client = TelegramClient(StringSession(session_string), config['api_id'], config['api_hash'], loop=loop)
+    print("INFO: Thunderbot Client Created with api_id: {}, phone: {}".format(config['api_id'], config['phone']))
     
     try:
-        await client.connect()
+        loop.run_until_complete(client.connect())
         print("INFO: Thunderbot Client Connected")
         
-        if not await client.is_user_authorized():
+        authorized = loop.run_until_complete(client.is_user_authorized())
+        if not authorized:
             if 'code' not in data:
+                print("DEBUG: Sending code request for phone: {}".format(config['phone']))
                 try:
-                    sent_code = await client.send_code_request(config['phone'])
+                    sent_code = loop.run_until_complete(client.send_code_request(config['phone']))
                     session['telegram_session_temp'] = client.session.save()
-                    print(f"INFO: Code Required, phone_code_hash: {sent_code.phone_code_hash}, session: {session['telegram_session_temp']}")
-                    await client.disconnect()
+                    session['phone_code_hash'] = sent_code.phone_code_hash
+                    print("INFO: Code requested successfully, phone_code_hash: {}".format(sent_code.phone_code_hash))
+                    client.disconnect()
                     return jsonify({
                         'status': 'code_required',
                         'phone_code_hash': sent_code.phone_code_hash
                     })
                 except Exception as e:
-                    await client.disconnect()
-                    print(f"ERROR: Failed to send code request: {str(e)}")
-                    return jsonify({'error': f'Failed to send code request: {str(e)}'}), 400
-            
+                    client.disconnect()
+                    print("ERROR: Failed to send code request: {}".format(str(e)))
+                    return jsonify({'error': f'Failed to send code: {str(e)}'}), 400
             else:
                 if 'phone_code_hash' not in data:
-                    await client.disconnect()
-                    print("ERROR: phone_code_hash missing")
+                    print("ERROR: phone_code_hash missing in request")
+                    client.disconnect()
                     return jsonify({'error': 'phone_code_hash is required'}), 400
+                print(f"DEBUG: Signing in with code: {data['code']}, phone_code_hash: {data['phone_code_hash']}")
                 try:
-                    print(f"DEBUG: Attempting sign-in with code: {data['code']}, hash: {data['phone_code_hash']}, session: {session['telegram_session_temp']}")
-                    await client.sign_in(
+                    loop.run_until_complete(client.sign_in(
                         phone=config['phone'],
                         code=data['code'],
                         phone_code_hash=data['phone_code_hash']
-                    )
-                    print("INFO: Thunderbot Signed In")
-                    session['telegram_session'] = client.session.save()
+                    ))
+                    config['session_string'] = client.session.save()
                     session.pop('telegram_session_temp', None)
-                    dialogs = await client.get_dialogs()
-                    if not isinstance(dialogs, (list, tuple)):
-                        raise ValueError(f"Expected list of dialogs, got {type(dialogs)}: {dialogs}")
+                    session.pop('phone_code_hash', None)
+                    save_user_config(session['key'], config)
+                    dialogs = loop.run_until_complete(client.get_dialogs())
                     chats = [{'id': dialog.id, 'name': dialog.name or 'Sin Nombre'} for dialog in dialogs]
-                    await client.disconnect()
+                    client.disconnect()
                     print("INFO: Thunderbot Successfully retrieved chats")
                     return jsonify({'status': 'success', 'chats': chats})
                 except Exception as e:
-                    await client.disconnect()
-                    print(f"ERROR: Thunderbot Sign-in failed: {str(e)}")
-                    if "The confirmation code has expired" in str(e):
-                        flash("The confirmation code has expired. Please request a new one.", "error")
-                        return jsonify({'error': 'Code expired, please request a new one'}), 400
+                    client.disconnect()
+                    print(f"ERROR: Sign-in failed: {str(e)}")
                     return jsonify({'error': f'Sign-in failed: {str(e)}'}), 400
         
-        dialogs = await client.get_dialogs()
-        if not isinstance(dialogs, (list, tuple)):
-            raise ValueError(f"Expected list of dialogs, got {type(dialogs)}: {dialogs}")
+        dialogs = loop.run_until_complete(client.get_dialogs())
         chats = [{'id': dialog.id, 'name': dialog.name or 'Sin Nombre'} for dialog in dialogs]
-        await client.disconnect()
+        client.disconnect()
         print("INFO: Thunderbot Successfully retrieved chats for authorized user")
         return jsonify({'chats': chats})
     
     except Exception as e:
-        if client.is_connected():
-            await client.disconnect()
-        print(f"ERROR: Thunderbot Connection failed: {str(e)}")
+        print(f"ERROR: Connection failed: {str(e)}")
         return jsonify({'error': f'Failed to connect to Telegram: {str(e)}'}), 500
+    finally:
+        client.disconnect()
+        loop.close()
 
 @app.route('/edit_chats', methods=['GET', 'POST'])
 @key_required
 def edit_chats():
+    """Edit source and destination chats."""
     config = load_user_config(session['key'])
     if not config:
         flash("Configuration not found. Please set up Thunderbot.", "error")
         return redirect(url_for('setup'))
     
-    if 'telegram_session' not in session:
+    if not config.get('session_string'):
         flash("Session not found. Please re-authenticate.", "warning")
         return redirect(url_for('setup'))
     
@@ -316,7 +400,7 @@ def edit_chats():
         flash("Chats updated successfully!", "success")
         return jsonify({'success': True})
     
-    chats = fetch_chats_sync(session['telegram_session'], config['api_id'], config['api_hash'])
+    chats = fetch_chats_sync(config['session_string'], config['api_id'], config['api_hash'])
     if chats is None:
         flash("Session invalid. Please re-authenticate.", "warning")
         return redirect(url_for('setup'))
@@ -327,11 +411,12 @@ def edit_chats():
 @app.route('/save_chats', methods=['POST'])
 @key_required
 def save_chats():
-    if 'telegram_session' not in session:
+    """Save selected chats."""
+    config = load_user_config(session['key'])
+    if not config or not config.get('session_string'):
         return jsonify({'error': 'Session not found'}), 401
     
     data = request.json
-    config = load_user_config(session['key'])
     if not config:
         return jsonify({'error': 'Configuration not found'}), 500
     
@@ -341,10 +426,11 @@ def save_chats():
     flash("Chats saved successfully!", "success")
     return jsonify({'success': True})
 
-# Store active clients
+# Store active bot clients
 active_clients = {}
 
 def run_bot_in_thread(key, session_string, config):
+    """Run the Telegram bot in a separate thread."""
     async def bot_loop():
         client = TelegramClient(StringSession(session_string), config['api_id'], config['api_hash'])
         try:
@@ -389,13 +475,14 @@ def run_bot_in_thread(key, session_string, config):
 
 @app.route('/start_bot', methods=['POST'])
 @key_required
-async def start_bot():
-    if 'telegram_session' not in session:
+def start_bot():
+    """Start the Telegram bot."""
+    config = load_user_config(session['key'])
+    if not config or not config.get('session_string'):
         flash("Session not found. Please authenticate.", "warning")
         return jsonify({'error': 'Session not found'}), 401
     
     key = session['key']
-    config = load_user_config(key)
     if not config or not all(k in config for k in ['api_id', 'api_hash', 'phone', 'chats_origen', 'chat_destino']):
         flash("Configuration incomplete. Please set up Thunderbot fully.", "error")
         return jsonify({'error': 'Configuration incomplete'}), 400
@@ -404,18 +491,22 @@ async def start_bot():
         flash("Thunderbot is already running.", "info")
         return jsonify({'status': 'already_running'})
 
-    thread = threading.Thread(target=run_bot_in_thread, args=(key, session['telegram_session'], config), daemon=True)
+    thread = threading.Thread(target=run_bot_in_thread, args=(key, config['session_string'], config), daemon=True)
     active_clients[key] = None
     thread.start()
 
-    await asyncio.sleep(1)
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(asyncio.sleep(1))
+    loop.close()
     print(f"INFO: Thunderbot successfully started for key {key}")
     flash("Thunderbot started successfully!", "success")
     return jsonify({'status': 'started'})
 
 @app.route('/stop_bot', methods=['POST'])
 @key_required
-async def stop_bot():
+def stop_bot():
+    """Stop the Telegram bot."""
     key = session['key']
     if key in active_clients:
         del active_clients[key]
@@ -428,12 +519,13 @@ async def stop_bot():
 @app.route('/dashboard')
 @key_required
 def dashboard():
+    """User dashboard."""
     config = load_user_config(session['key'])
     if not config:
         flash("Configuration not found. Please set up Thunderbot.", "error")
         return redirect(url_for('setup'))
     
-    if 'telegram_session' not in session:
+    if not config.get('session_string'):
         flash("Session not found. Please authenticate.", "warning")
         return redirect(url_for('setup'))
     
@@ -443,6 +535,7 @@ def dashboard():
 
 @app.route('/admin/login', methods=['GET', 'POST'])
 def admin_login():
+    """Admin login route."""
     if request.method == 'POST':
         username = request.form['username']
         password = request.form['password']
@@ -457,6 +550,7 @@ def admin_login():
 
 @app.route('/admin/logout')
 def admin_logout():
+    """Admin logout route."""
     session.pop('admin_logged_in', None)
     flash("Admin logged out successfully.", "success")
     return redirect(url_for('admin_login'))
@@ -464,6 +558,7 @@ def admin_logout():
 @app.route('/admin')
 @admin_required
 def admin_dashboard():
+    """Admin dashboard."""
     keys = load_keys()
     validity_days = get_key_validity_days(session.get('key')) if 'key' in session else None
     return render_template('admin/admin_dashboard.html', keys=keys, delay_times=DELAY_TIMES, validity_days=validity_days)
@@ -471,6 +566,7 @@ def admin_dashboard():
 @app.route('/admin/update_delays', methods=['POST'])
 @admin_required
 def update_delays():
+    """Update delay times for key types."""
     global DELAY_TIMES
     try:
         DELAY_TIMES['normal'] = float(request.form['normal_delay'])
@@ -485,6 +581,7 @@ def update_delays():
 @app.route('/admin/generate_key', methods=['GET', 'POST'])
 @admin_required
 def admin_generate_key():
+    """Generate a new key."""
     if request.method == 'POST':
         try:
             days = int(request.form['days'])
@@ -507,7 +604,8 @@ def admin_generate_key():
                 "api_hash": "",
                 "phone": "",
                 "chats_origen": [],
-                "chat_destino": None
+                "chat_destino": None,
+                "session_string": None
             })
             save_keys(keys_data)
             flash(f"Key {new_key} generated successfully!", "success")
@@ -521,6 +619,7 @@ def admin_generate_key():
 @app.route('/admin/renew_key/<key>', methods=['POST'])
 @admin_required
 def admin_renew_key(key):
+    """Renew an existing key."""
     days = int(request.form['days'])
     keys_data = load_keys()
     if key in keys_data:
@@ -537,16 +636,26 @@ def admin_renew_key(key):
 @app.route('/admin/delete_key/<key>')
 @admin_required
 def admin_delete_key(key):
+    """Delete a key."""
     keys_data = load_keys()
     if key in keys_data:
         if key in active_clients:
             del active_clients[key]
+        config = load_user_config(key)
+        if config and config.get('session_string'):
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(revoke_session(config['session_string'], config['api_id'], config['api_hash']))
+            loop.close()
+            print(f"INFO: Revoked session for deleted key {key}")
         del keys_data[key]
         save_keys(keys_data)
         user_folder = os.path.join(BASE_CONFIG_DIR, key)
         if os.path.exists(user_folder):
             import shutil
             shutil.rmtree(user_folder)
+        if 'key' in session and session['key'] == key:
+            session.pop('key', None)
         flash(f"Key {key} deleted successfully!", "success")
     else:
         flash(f"Key {key} not found.", "error")
@@ -555,6 +664,7 @@ def admin_delete_key(key):
 @app.route('/admin/reset_hwid/<key>')
 @admin_required
 def admin_reset_hwid(key):
+    """Reset the HWID for a key."""
     keys_data = load_keys()
     if key in keys_data:
         keys_data[key]["hwid"] = None
@@ -565,4 +675,4 @@ def admin_reset_hwid(key):
     return redirect(url_for('admin_dashboard'))
 
 if __name__ == '__main__':
-    app.run(debug=False, host="0.0.0.0", port=80)
+    app.run(debug=True, host="0.0.0.0", port=80)
