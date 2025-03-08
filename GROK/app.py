@@ -29,8 +29,8 @@ DELAY_TIMES = {
     'titanium': 0.0
 }
 
-# URL pattern for message forwarding (e.g., https://pump.fun/coin/<44-char-id>)
-PATTERN_44 = re.compile(r"https://pump\.fun/coin/[a-zA-Z0-9]{44}")
+# Updated pattern for 44-character IDs (with optional "pump" or "moon")
+PATTERN_44 = re.compile(r"[a-zA-Z0-9]{44}(?:pump|moon)?")
 
 # Simulated key storage (replace with a real database in production)
 KEYS_FILE = "keys.json"
@@ -190,8 +190,9 @@ def key_required(f):
             return redirect(url_for('login'))
         keys_data = load_keys()
         key_data = keys_data.get(session['key'])
-        if key_data['hwid'] and key_data['hwid'] != get_device_hwid():
-            flash("This key is associated with another device.", "error")
+        current_hwid = get_device_hwid()
+        if key_data['hwid'] and key_data['hwid'] != current_hwid:
+            flash("This key is bound to another device. Contact admin to reset HWID.", "error")
             return redirect(url_for('login'))
         return f(*args, **kwargs)
     return decorated_function
@@ -227,31 +228,35 @@ def login():
             validity_days = get_key_validity_days(key)
             if validity_days is None or validity_days <= 0:
                 flash("This key has expired.", "error")
-                return render_template('login.html', validity_days=None)
+                return redirect(url_for('login'))
             if is_key_deleted(key):
                 flash("This key has been deleted.", "error")
-                return render_template('login.html', validity_days=None)
+                return redirect(url_for('login'))
             
             keys_data = load_keys()
             key_data = keys_data.get(key)
             current_hwid = get_device_hwid()
             
             # Associate HWID if not set
-            if key_data['hwid'] is None:
+            if key_data.get('hwid') is None:
                 key_data['hwid'] = current_hwid
                 save_keys(keys_data)
             # Deny if HWID mismatch
             elif key_data['hwid'] != current_hwid:
-                flash("This key is associated with another device.", "error")
-                return render_template('login.html', validity_days=None)
+                flash("This key is bound to another device. Contact admin to reset HWID.", "error")
+                return redirect(url_for('login'))
             
-            # Revoke any existing session for this key
-            config = load_user_config(key)
-            if config and 'session_string' in config and config['session_string']:
-                revoke_existing_session(key)
-            
-            # Set the key in session
+            # Check if key is locked (only during login)
+            if key_data.get('lock', False):
+                print("This key is currently in use. Please log out first.")
+                flash("This key is currently in use. Please log out first.", "error")
+                return redirect(url_for('login'))
+                
+            # Set the key in session and lock it
             session['key'] = key
+            key_data['lock'] = True
+            save_keys(keys_data)
+            config = load_user_config(key)
             if not config or not all(k in config for k in ['api_id', 'api_hash', 'phone']):
                 flash("Configuration incomplete. Please set up your Thunderbot.", "warning")
                 return redirect(url_for('setup'))
@@ -264,7 +269,7 @@ def login():
             flash("Logged in successfully!", "success")
             return redirect(url_for('dashboard'))
         flash("Invalid key.", "error")
-        return render_template('login.html', validity_days=None)
+        return redirect(url_for('login'))
     
     validity_days = get_key_validity_days(session.get('key')) if 'key' in session else None
     return render_template('login.html', validity_days=validity_days)
@@ -275,6 +280,10 @@ def logout():
     """User logout route."""
     if 'key' in session:
         key = session['key']
+        keys_data = load_keys()
+        if key in keys_data:
+            keys_data[key]['lock'] = False  # Unlock the key
+            save_keys(keys_data)
         if key in active_clients:
             del active_clients[key]
         session.pop('key', None)
@@ -325,6 +334,13 @@ def telegram_auth():
         authorized = loop.run_until_complete(client.is_user_authorized())
         if not authorized:
             if 'code' not in data:
+                if 'phone_code_hash' in session:
+                    print("INFO: Code already requested, reusing phone_code_hash: {}".format(session['phone_code_hash']))
+                    client.disconnect()
+                    return jsonify({
+                        'status': 'code_required',
+                        'phone_code_hash': session['phone_code_hash']
+                    })
                 print("DEBUG: Sending code request for phone: {}".format(config['phone']))
                 try:
                     sent_code = loop.run_until_complete(client.send_code_request(config['phone']))
@@ -445,14 +461,16 @@ def run_bot_in_thread(key, session_string, config):
                     message_text = event.message.message or ""
                     chat_id = event.chat_id
                     print(f"DEBUG: Thunderbot received message in chat {chat_id}: {message_text}")
-                    if PATTERN_44.search(message_text):
+                    match = PATTERN_44.search(message_text)
+                    if match:
+                        id_to_forward = match.group(0)
                         keys_data = load_keys()
                         key_data = keys_data.get(key, {})
                         delay = DELAY_TIMES.get(key_data.get('type', 'normal'), 1.2)
-                        print(f"DEBUG: Thunderbot message matches pattern, forwarding with delay {delay}s")
+                        print(f"DEBUG: Thunderbot matched ID: {id_to_forward}, forwarding with delay {delay}s")
                         await asyncio.sleep(delay)
-                        await client.send_message(config['chat_destino'], message_text)
-                        print(f"DEBUG: Thunderbot message forwarded to {config['chat_destino']}")
+                        await client.send_message(config['chat_destino'], id_to_forward)
+                        print(f"DEBUG: Thunderbot forwarded ID {id_to_forward} to {config['chat_destino']}")
                     else:
                         print("DEBUG: Thunderbot message ignored (no 44-char pattern match)")
                 except Exception as e:
@@ -596,7 +614,8 @@ def admin_generate_key():
                 "expiration": expiration_date.strftime("%Y-%m-%d"),
                 "user": request.form.get('user_name', 'Nuevo Usuario'),
                 "hwid": None,
-                "type": key_type
+                "type": key_type,
+                "lock": False  # Initialize lock as False
             }
             ensure_config_dir()
             save_user_config(new_key, {
@@ -664,10 +683,11 @@ def admin_delete_key(key):
 @app.route('/admin/reset_hwid/<key>')
 @admin_required
 def admin_reset_hwid(key):
-    """Reset the HWID for a key."""
+    """Reset the HWID for a key and unlock it."""
     keys_data = load_keys()
     if key in keys_data:
         keys_data[key]["hwid"] = None
+        keys_data[key]["lock"] = False  # Unlock the key when resetting HWID
         save_keys(keys_data)
         flash(f"HWID for key {key} reset successfully!", "success")
     else:
