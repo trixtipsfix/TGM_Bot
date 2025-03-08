@@ -228,10 +228,10 @@ def login():
             validity_days = get_key_validity_days(key)
             if validity_days is None or validity_days <= 0:
                 flash("This key has expired.", "error")
-                return redirect(url_for('login'))
+                return redirect(url_for('logout'))
             if is_key_deleted(key):
                 flash("This key has been deleted.", "error")
-                return redirect(url_for('login'))
+                return redirect(url_for('logout'))
             
             keys_data = load_keys()
             key_data = keys_data.get(key)
