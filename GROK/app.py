@@ -187,6 +187,12 @@ def key_required(f):
             revoke_existing_session(session['key'])
             session.pop('key', None)
             flash("Your key has expired.", "error")
+            if 'key' in session:
+                key = session['key']
+                keys_data = load_keys()
+                if key in keys_data:
+                    keys_data[key]['lock'] = False  # Unlock the key
+                    save_keys(keys_data)
             return redirect(url_for('logout'))
         keys_data = load_keys()
         key_data = keys_data.get(session['key'])
@@ -227,6 +233,13 @@ def login():
         if validate_and_associate_key(key):
             validity_days = get_key_validity_days(key)
             if validity_days is None or validity_days <= 0:
+                
+                if 'key' in session:
+                    key = session['key']
+                    keys_data = load_keys()
+                    if key in keys_data:
+                        keys_data[key]['lock'] = False  # Unlock the key
+                        save_keys(keys_data)
                 flash("This key has expired.", "error")
                 return redirect(url_for('logout'))
             if is_key_deleted(key):
