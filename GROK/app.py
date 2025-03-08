@@ -187,7 +187,7 @@ def key_required(f):
             revoke_existing_session(session['key'])
             session.pop('key', None)
             flash("Your key has expired.", "error")
-            return redirect(url_for('login'))
+            return redirect(url_for('logout'))
         keys_data = load_keys()
         key_data = keys_data.get(session['key'])
         current_hwid = get_device_hwid()
