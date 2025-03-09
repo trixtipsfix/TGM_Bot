@@ -2,6 +2,7 @@ from flask import Flask, render_template, request, jsonify, session, redirect, u
 import asyncio
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
+from telethon.errors import ChannelInvalidError, PeerIdInvalidError
 import os
 import json
 import random
@@ -233,7 +234,6 @@ def login():
         if validate_and_associate_key(key):
             validity_days = get_key_validity_days(key)
             if validity_days is None or validity_days <= 0:
-                
                 if 'key' in session:
                     key = session['key']
                     keys_data = load_keys()
@@ -468,6 +468,15 @@ def run_bot_in_thread(key, session_string, config):
                 print(f"ERROR: Thunderbot not authorized for key {key}")
                 return
 
+            # Resolve the destination chat entity before starting
+            try:
+                dest_entity = await client.get_input_entity(config['chat_destino'])
+                print(f"INFO: Successfully resolved destination chat {config['chat_destino']} for key {key}")
+            except (ValueError, PeerIdInvalidError, ChannelInvalidError) as e:
+                print(f"ERROR: Failed to resolve destination chat {config['chat_destino']} for key {key}: {str(e)}")
+                await client.disconnect()
+                return
+
             @client.on(events.NewMessage(chats=config['chats_origen']))
             async def forward_message(event):
                 try:
@@ -482,7 +491,7 @@ def run_bot_in_thread(key, session_string, config):
                         delay = DELAY_TIMES.get(key_data.get('type', 'normal'), 1.2)
                         print(f"DEBUG: Thunderbot matched ID: {id_to_forward}, forwarding with delay {delay}s")
                         await asyncio.sleep(delay)
-                        await client.send_message(config['chat_destino'], id_to_forward)
+                        await client.send_message(dest_entity, id_to_forward)
                         print(f"DEBUG: Thunderbot forwarded ID {id_to_forward} to {config['chat_destino']}")
                     else:
                         print("DEBUG: Thunderbot message ignored (no 44-char pattern match)")
