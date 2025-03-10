@@ -1,7 +1,8 @@
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for, flash
 import asyncio
 from telethon import TelegramClient, events
-from telethon.errors import ChannelInvalidError, PeerIdInvalidError
+from telethon.sessions import StringSession
+from telethon.errors import PeerIdInvalidError, UserPrivacyRestrictedError
 import os
 import json
 import random
@@ -11,10 +12,9 @@ import threading
 from functools import wraps
 import uuid
 import re
-from telethon.sessions import StringSession
 
 app = Flask(__name__)
-app.secret_key = 'verysecseckey'  # Required for secure sessions; change in production
+app.secret_key = 'verysecseckey'  # Change this in production
 
 # Admin credentials (hardcoded for simplicity; use a database in production)
 ADMIN_USERNAME = "admin"
@@ -213,9 +213,9 @@ def revoke_existing_session(key):
         client = TelegramClient(StringSession(config['session_string']), config['api_id'], config['api_hash'], loop=loop)
         loop.run_until_complete(client.connect())
         loop.run_until_complete(client.log_out())
-        client.disconnect()  # Synchronous disconnect
+        client.disconnect()
         loop.close()
-        config['session_string'] = None  # Clear the session string
+        config['session_string'] = None
         save_user_config(key, config)
         print(f"INFO: Revoked session for key {key}")
 
@@ -238,7 +238,7 @@ def login():
                     key = session['key']
                     keys_data = load_keys()
                     if key in keys_data:
-                        keys_data[key]['lock'] = False  # Unlock the key
+                        keys_data[key]['lock'] = False
                         save_keys(keys_data)
                 flash("This key has expired.", "error")
                 return redirect(url_for('logout'))
@@ -250,22 +250,17 @@ def login():
             key_data = keys_data.get(key)
             current_hwid = get_device_hwid()
             
-            # Associate HWID if not set
             if key_data.get('hwid') is None:
                 key_data['hwid'] = current_hwid
                 save_keys(keys_data)
-            # Deny if HWID mismatch
             elif key_data['hwid'] != current_hwid:
                 flash("This key is bound to another device. Contact admin to reset HWID.", "error")
                 return redirect(url_for('login'))
             
-            # Check if key is locked (only during login)
             if key_data.get('lock', False):
-                print("This key is currently in use. Please log out first.")
                 flash("This key is currently in use. Please log out first.", "error")
                 return redirect(url_for('login'))
                 
-            # Set the key in session and lock it
             session['key'] = key
             key_data['lock'] = True
             save_keys(keys_data)
@@ -274,7 +269,6 @@ def login():
                 flash("Configuration incomplete. Please set up your Thunderbot.", "warning")
                 return redirect(url_for('setup'))
             
-            # Check if session_string exists and is valid
             if not config.get('session_string') or not is_session_valid(config['session_string'], config['api_id'], config['api_hash']):
                 flash("Please authenticate Telegram.", "warning")
                 return redirect(url_for('setup'))
@@ -295,7 +289,7 @@ def logout():
         key = session['key']
         keys_data = load_keys()
         if key in keys_data:
-            keys_data[key]['lock'] = False  # Unlock the key
+            keys_data[key]['lock'] = False
             save_keys(keys_data)
         if key in active_clients:
             del active_clients[key]
@@ -315,7 +309,8 @@ def setup():
             "phone": data['phone'],
             "chats_origen": [],
             "chat_destino": None,
-            "session_string": None  # Initialize session_string
+            "dest_username": None,  # Optional username for destination
+            "session_string": None
         }
         save_user_config(session['key'], config)
         flash("Setup saved successfully. Please authenticate with Telegram.", "success")
@@ -425,6 +420,7 @@ def edit_chats():
         data = request.json
         config['chats_origen'] = data['source_chats']
         config['chat_destino'] = data['dest_chat']
+        config['dest_username'] = data.get('dest_username', None)  # Optional username
         save_user_config(session['key'], config)
         flash("Chats updated successfully!", "success")
         return jsonify({'success': True})
@@ -451,6 +447,7 @@ def save_chats():
     
     config['chats_origen'] = data['source_chats']
     config['chat_destino'] = data['dest_chat']
+    config['dest_username'] = data.get('dest_username', None)
     save_user_config(session['key'], config)
     flash("Chats saved successfully!", "success")
     return jsonify({'success': True})
@@ -458,89 +455,105 @@ def save_chats():
 # Store active bot clients
 active_clients = {}
 
+# Placeholder for bot thread function (adapt from your original logic)
 def run_bot_in_thread(key, session_string, config):
-    """Run the Telegram bot in a separate thread."""
+    # Define the async function to run the bot
     async def bot_loop():
+        # Create the Telegram client
         client = TelegramClient(StringSession(session_string), config['api_id'], config['api_hash'])
         try:
+            # Connect to Telegram asynchronously
             await client.connect()
+            
+            # Check if the client is authorized
             if not await client.is_user_authorized():
-                print(f"ERROR: Thunderbot not authorized for key {key}")
+                print(f"ERROR: Client not authorized for key {key}")
                 return
-
-            @client.on(events.NewMessage(chats=config['chats_origen']))
+            
+            # Define the event handler
+            @client.on(events.NewMessage(chats=config.get('chats_origen', [])))
             async def forward_message(event):
-                try:
-                    message_text = event.message.message or ""
-                    chat_id = event.chat_id
-                    print(f"DEBUG: Thunderbot received message in chat {chat_id}: {message_text}")
-                    match = PATTERN_44.search(message_text)
-                    if match:
-                        id_to_forward = match.group(0)
-                        keys_data = load_keys()
-                        key_data = keys_data.get(key, {})
-                        delay = DELAY_TIMES.get(key_data.get('type', 'normal'), 1.2)
-                        print(f"DEBUG: Thunderbot matched ID: {id_to_forward}, forwarding with delay {delay}s")
-                        await asyncio.sleep(delay)
-                        
-                        # Dynamically resolve the destination chat entity
-                        try:
-                            dest_entity = await client.get_input_entity(config['chat_destino'])
-                            print(f"INFO: Resolved destination chat {config['chat_destino']} for key {key}")
-                        except (ValueError, PeerIdInvalidError, ChannelInvalidError) as e:
-                            print(f"ERROR: Failed to resolve destination chat {config['chat_destino']} for key {key}: {str(e)}")
-                            return  # Skip this message if entity resolution fails
-
-                        await client.send_message(dest_entity, id_to_forward)
-                        print(f"DEBUG: Thunderbot forwarded ID {id_to_forward} to {config['chat_destino']}")
-                    else:
-                        print("DEBUG: Thunderbot message ignored (no 44-char pattern match)")
-                except Exception as e:
-                    print(f"ERROR: Thunderbot forwarding failed: {str(e)}")
-
-            print(f"INFO: Thunderbot loop started for key {key} with source chats {config['chats_origen']}")
+                if re.search(r'[A-Za-z0-9]{44}', event.message.message):
+                    await asyncio.sleep(0)  # Add delay logic if needed
+                    print("Forwarding,...")
+                    await client.send_message(config['chat_destino'], event.message.message)
+            
+            # Run the client until it disconnects
             await client.run_until_disconnected()
-            print(f"INFO: Thunderbot loop stopped for key {key}")
-        except Exception as e:
-            print(f"ERROR: Thunderbot loop failed for key {key}: {str(e)}")
         finally:
+            # Ensure the client disconnects cleanly if still connected
             if client.is_connected():
                 await client.disconnect()
-            if key in active_clients:
-                del active_clients[key]
-
+    
+    # Set up the event loop in the thread
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+    # Run the bot_loop coroutine until it completes
     loop.run_until_complete(bot_loop())
 
 @app.route('/start_bot', methods=['POST'])
-@key_required
+@key_required  # Assumes a decorator to validate the session key
 def start_bot():
-    """Start the Telegram bot."""
+    """Start the Telegram bot after verifying the destination chat is in the user's dialogs."""
+    # Load user configuration
     config = load_user_config(session['key'])
     if not config or not config.get('session_string'):
         flash("Session not found. Please authenticate.", "warning")
         return jsonify({'error': 'Session not found'}), 401
-    
+
     key = session['key']
-    if not config or not all(k in config for k in ['api_id', 'api_hash', 'phone', 'chats_origen', 'chat_destino']):
-        flash("Configuration incomplete. Please set up Thunderbot fully.", "error")
+    required_keys = ['api_id', 'api_hash', 'phone', 'chat_destino']
+    if not all(k in config for k in required_keys):
+        flash("Configuration incomplete. Please set up fully.", "error")
         return jsonify({'error': 'Configuration incomplete'}), 400
-    
-    if key in active_clients:
-        flash("Thunderbot is already running.", "info")
+
+    if key in active_clients:  # Assumes active_clients tracks running bots
+        flash("Bot is already running.", "info")
         return jsonify({'status': 'already_running'})
 
+    # Initialize Telegram client
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    client = TelegramClient(StringSession(config['session_string']), config['api_id'], config['api_hash'])
+
+    try:
+        # Connect to Telegram
+        loop.run_until_complete(client.connect())
+
+        # Fetch user's dialogs
+        dialogs = loop.run_until_complete(client.get_dialogs())
+        dialog_ids = [dialog.id for dialog in dialogs]
+
+        # Check if destination chat is in dialogs
+        if config['chat_destino'] not in dialog_ids:
+            flash("The destination chat is not in your dialogs. Please interact with it first.", "error")
+            return jsonify({
+                'error': 'Destination chat not found',
+                'message': 'Please send a message to the destination chat/user or join the chat before starting the bot.'
+            }), 400
+
+        # If found, resolve the entity to confirm
+        loop.run_until_complete(client.get_entity(config['chat_destino']))
+
+    except Exception as e:
+        flash(f"Failed to validate destination chat: {str(e)}", "error")
+        return jsonify({'error': f'Validation failed: {str(e)}'}), 500
+    finally:
+        client.disconnect()
+        loop.close()
+
+    # Start the bot in a separate thread
     thread = threading.Thread(target=run_bot_in_thread, args=(key, config['session_string'], config), daemon=True)
     active_clients[key] = None
     thread.start()
 
+    # Brief delay to ensure thread starts
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(asyncio.sleep(1))
     loop.close()
-    print(f"INFO: Thunderbot successfully started for key {key}")
-    flash("Thunderbot started successfully!", "success")
+
+    flash("Bot started successfully!", "success")
     return jsonify({'status': 'started'})
 
 @app.route('/stop_bot', methods=['POST'])
@@ -637,7 +650,7 @@ def admin_generate_key():
                 "user": request.form.get('user_name', 'Nuevo Usuario'),
                 "hwid": None,
                 "type": key_type,
-                "lock": False  # Initialize lock as False
+                "lock": False
             }
             ensure_config_dir()
             save_user_config(new_key, {
@@ -646,6 +659,7 @@ def admin_generate_key():
                 "phone": "",
                 "chats_origen": [],
                 "chat_destino": None,
+                "dest_username": None,
                 "session_string": None
             })
             save_keys(keys_data)
@@ -709,7 +723,7 @@ def admin_reset_hwid(key):
     keys_data = load_keys()
     if key in keys_data:
         keys_data[key]["hwid"] = None
-        keys_data[key]["lock"] = False  # Unlock the key when resetting HWID
+        keys_data[key]["lock"] = False
         save_keys(keys_data)
         flash(f"HWID for key {key} reset successfully!", "success")
     else:
